@@ -96,10 +96,35 @@ Next claim in 4h.
 ## Options
 
 ```
-python setup.py        # interactive setup (fills config.json for you)
-python bot.py          # run with live countdown timer (default)
-python bot.py --once   # single run, check + claim if available, then exit
-python bot.py --login  # force re-login (get new OTP)
+python setup.py          # interactive setup (fills config.json for you)
+python bot.py            # run with live countdown timer (default)
+python bot.py --once     # single run, check + claim if available, then exit
+python bot.py --login    # force re-login (get new OTP)
+python bot.py --status   # quick status check (no login, reads local files)
+```
+
+## Check Status
+
+After the bot is running (or even if it's not), you can check the latest claim status anytime:
+
+```bash
+python bot.py --status
+```
+
+This reads local files (`claim_state.json` + `interlink.log`) — no API call, no login needed. Works even if the bot is running in the background.
+
+```
+  ╔══════════════════════════════════════╗
+  ║   Interlink ITLG — Status             ║
+  ╚══════════════════════════════════════╝
+
+  🤖 Bot: ✅ Running (PID 101441)
+  💰 Balance: 5213 ITLG
+  🎯 Last claim: +17 ITLG (0h 16m ago)
+  📊 History: 17 → 17 → 17
+  👥 Refs: 3.5 (16 refs)
+  💎 Recoverable: 10415 ITLG
+  ⏳ Next claim: 03h 40m 17s
 ```
 
 ## Group Mining

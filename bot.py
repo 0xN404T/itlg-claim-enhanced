@@ -617,10 +617,57 @@ def run_loop(cfg):
                 next_frame = time.time() * 1000 + 60 * 1000
         time.sleep(10)  # Poll every 10s, not 1s — less suspicious than constant pinging
 
+
+# ─── Status check (no login needed) ───────────────────────────────────────────
+def show_status():
+    """Quick status check from claim_state.json + log — no API call needed."""
+    import subprocess
+    state = load_claim_state()
+    bal = state.get("balance", 0)
+    lc = state.get("last_claim", 0)
+    history = state.get("history", [])
+    updated = state.get("updated_at", 0)
+    ago = int(time.time() - updated)
+    h, m = ago // 3600, (ago % 3600) // 60
+
+    # Bot running?
+    try:
+        pid = subprocess.getoutput('pgrep -f "python3 bot.py"').strip().split("\n")[0]
+        bot_status = f"✅ Running (PID {pid})" if pid else "❌ NOT running"
+    except Exception:
+        bot_status = "❓ Unknown"
+
+    # Parse log for extras
+    refs, nxt, rec = "N/A", "~4h", "N/A"
+    try:
+        log = open(os.path.join(SCRIPT_DIR, "interlink.log")).read()
+        r = re.findall(r"Referral\s+([\d.]+ \(\d+ refs\))", log)
+        n = re.findall(r"Next claim in ([\dh ms]+)", log)
+        c = re.findall(r"Recoverable\s+(\d+) ITLG", log)
+        if r: refs = r[-1]
+        if n: nxt = n[-1].strip()
+        if c: rec = c[-1]
+    except Exception:
+        pass
+
+    print(f"\n  {C.CY}{C.B}╔══════════════════════════════════════╗{C.R}")
+    print(f"  {C.CY}{C.B}║   Interlink ITLG — Status             ║{C.R}")
+    print(f"  {C.CY}{C.B}╚══════════════════════════════════════╝{C.R}\n")
+    print(f"  🤖 Bot: {bot_status}")
+    print(f"  💰 Balance: {bal} ITLG")
+    print(f"  🎯 Last claim: +{lc} ITLG ({h}h {m}m ago)")
+    if history:
+        print(f"  📊 History: {' → '.join(str(x) for x in history[-5:])}")
+    print(f"  👥 Refs: {refs}")
+    print(f"  💎 Recoverable: {rec} ITLG")
+    print(f"  ⏳ Next claim: {nxt}")
+    print()
+
 def main():
     parser = argparse.ArgumentParser(description="Interlink Labs Auto Claim")
     parser.add_argument("--once", action="store_true", help="Single run, then exit")
     parser.add_argument("--login", action="store_true", help="Force re-login via OTP")
+    parser.add_argument("--status", action="store_true", help="Quick status check (no login needed)")
     args = parser.parse_args()
 
     print(f"\n  {C.CY}{C.B}╔════════════════════════════════════╗{C.R}")
@@ -636,6 +683,10 @@ def main():
         access, _ = do_login(cfg)
         if access:
             log("ok", "Login complete. Run: python bot.py")
+        return
+
+    if args.status:
+        show_status()
         return
 
     if args.once:

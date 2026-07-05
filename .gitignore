@@ -1,0 +1,13 @@
+config.json
+token.json
+accounts.json
+tokens/
+*.log
+token.txt
+refresh_token.txt
+device.txt
+__pycache__/
+*.pyc
+.venv/
+node_modules/
+token-backup.json

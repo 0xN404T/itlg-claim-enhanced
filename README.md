@@ -2,7 +2,7 @@
 
 Auto-claim $ITLG from Interlink Labs. Every 4 hours, no manual clicking.
 
-Single Python script. Login once with OTP, then it claims forever. The bot knows when your next claim is available and counts down automatically — just leave it running. Optional Telegram notifications when a claim succeeds.
+Single Python script. Login once with OTP, then it claims forever. The bot knows when your next claim is available and counts down automatically — just leave it running. Sends a Telegram notification on every successful claim.
 
 ## Quick Start
 
@@ -26,7 +26,7 @@ python setup.py
 | **tgBotToken** | Telegram bot token (optional) | Create a bot via [@BotFather](https://t.me/BotFather) |
 | **tgChatId** | Your Telegram user ID (optional) | Message [@userinfobot](https://t.me/userinfobot) |
 
-Watch the video tutorial: [Gmail App Password](https://myaccount.google.com/apppasswords) — this is a 16-character code that lets the bot read your OTP emails. It's **not** your Gmail login password.
+Gmail App Password is a 16-character code that lets the bot read your OTP emails. It's **not** your Gmail login password. [Get one here](https://myaccount.google.com/apppasswords).
 
 ## Run
 
@@ -34,7 +34,7 @@ Watch the video tutorial: [Gmail App Password](https://myaccount.google.com/appp
 python bot.py
 ```
 
-That's it. The bot logs in via OTP once, saves the token, and stays running. It reads the next claim time from the API and shows a live countdown. When the timer hits zero, it claims automatically.
+That's it. The bot logs in via OTP once, saves the token, and stays running. It reads the next claim time from the API and shows a live countdown. When the timer hits zero, it claims automatically and sends a Telegram notification.
 
 ```
   ╔══════════════════════════════════════╗
@@ -63,15 +63,16 @@ What each line means:
 - **Streak/Burned** — your current burning streak and total burned cycles
 - **Recoverable** — ITLG locked in burned cycles that can be recovered later
 
-On a successful claim, you'll see:
+On a successful claim, you'll see in the console:
 
 ```
 ✅ Claimed! +17 ITLG
 ℹ️ Balance: 592 → 609 ITLG
 ℹ️ Avg per claim: 17.0 | Per day: 102.0 ITLG
+✅ Telegram notification sent.
 ```
 
-And if Telegram is configured, you get a push notification:
+And on Telegram:
 
 ```
 ✅ ITLG Claim Success
@@ -93,21 +94,6 @@ python setup.py        # interactive setup (fills config.json for you)
 python bot.py          # run with live countdown timer (default)
 python bot.py --once   # single run, check + claim if available, then exit
 python bot.py --login  # force re-login (get new OTP)
-```
-
-## Cron Mode (Set and Forget)
-
-For auto-claiming without keeping the bot running, set up `check_claim.py` with cron:
-
-```bash
-*/5 * * * * cd /path/to/itlg-claim && python3 check_claim.py
-```
-
-The checker is **silent when there's nothing to claim** — it produces no output, so your logs stay clean. When a claim succeeds, it prints the notification to stdout (making it ideal for cron delivery — any output is the notification itself). It also sends directly to Telegram if `tgBotToken` + `tgChatId` are set in config.
-
-Manual test:
-```bash
-python check_claim.py   # prints claim result if claimable, silent otherwise
 ```
 
 ## Group Mining
@@ -150,7 +136,8 @@ Only `access` is required. `refresh` is optional but helps auto-renew.
 1. First run: sends OTP to your Gmail, IMAP grabs it, verifies, saves token
 2. Bot reads `nextFrame` from the API — knows exactly when you can claim next
 3. Counts down in real-time. When timer hits zero: checks claimable, triggers ads session, claims
-4. Token never logs out. If expired, refreshes automatically. Only re-logins if refresh token also dies.
+4. Sends Telegram notification with claimed amount + rate
+5. Token never logs out. If expired, refreshes automatically. Only re-logins if refresh token also dies.
 
 ## Token Types
 
@@ -167,7 +154,6 @@ You're mining **ITLG**.
 ```
 setup.py              # interactive setup — fills config.json with prompts
 bot.py                # the bot (loop mode + --once + --login)
-check_claim.py        # cron checker (silent if nothing to claim, prints on success)
 config.json           # your config (gitignored)
 config.json.example   # template with empty fields
 token.json            # saved token (gitignored, auto-created)
@@ -179,9 +165,9 @@ claim_state.json      # actual claim history for rate display (gitignored, auto-
 
 - Your token is saved locally with `chmod 600`. Don't share `config.json` or `token.json`.
 - If OTP doesn't arrive, the bot resends automatically (up to 3 times).
-- No multi-account, no proxy rotation, no Node.js. One script, one account, one dependency.
+- One script, one account, one dependency (`requests`).
 - Group mining is claimed automatically every cycle. The dashboard shows "pending activation" until the server enables your group's rate.
-- `burnedCycles` and `itlgRecoverable` are display-only — the API has no recovery endpoint yet. Recover through the app when available.
+- `burnedCycles` and `itlgRecoverable` are display-only — the API has no recovery endpoint yet.
 
 ## License
 

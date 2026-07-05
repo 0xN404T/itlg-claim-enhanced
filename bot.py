@@ -7,14 +7,18 @@ Usage:
   python bot.py --once        # single run, check + claim if available, exit
   python bot.py --login       # force re-login (trigger OTP)
 
-Config: config.json (see config.json.example)
+The bot auto-claims every 4h and sends a Telegram notification on success
+(if tgBotToken + tgChatId are set in config.json).
+
+Config: config.json (run `python setup.py` for interactive setup)
 """
 
-import sys, os, json, time, imaplib, email, re, hashlib, base64, argparse, urllib3
+import sys, os, json, time, imaplib, email, re, hashlib, base64, argparse
 from datetime import datetime
 from email.utils import parsedate_to_datetime
 
 import requests
+import urllib3
 urllib3.disable_warnings()
 
 # ─── Config ───────────────────────────────────────────────────────────────────
@@ -49,7 +53,7 @@ def log(ok, msg):
 # ─── Config loader ─────────────────────────────────────────────────────────────
 def load_config():
     if not os.path.exists(CONFIG_FILE):
-        log("err", "config.json not found. Copy config.json.example first.")
+        log("err", "config.json not found. Run: python setup.py")
         sys.exit(1)
     with open(CONFIG_FILE) as f:
         cfg = json.load(f)
@@ -60,15 +64,12 @@ def load_config():
     return cfg
 
 # ─── Token store ────────────────────────────────────────────────────────────────
-def save_tokens(access, refresh, backup=True):
-    with open(TOKEN_FILE, "w") as f:
-        json.dump({"access": access, "refresh": refresh or "", "saved_at": int(time.time())}, f)
-    os.chmod(TOKEN_FILE, 0o600)
-    if backup:
-        backup_path = os.path.join(SCRIPT_DIR, "token-backup.json")
-        with open(backup_path, "w") as f:
-            json.dump({"access": access, "refresh": refresh or "", "saved_at": int(time.time())}, f)
-        os.chmod(backup_path, 0o600)
+def save_tokens(access, refresh):
+    data = {"access": access, "refresh": refresh or "", "saved_at": int(time.time())}
+    for path in (TOKEN_FILE, os.path.join(SCRIPT_DIR, "token-backup.json")):
+        with open(path, "w") as f:
+            json.dump(data, f)
+        os.chmod(path, 0o600)
 
 def load_tokens():
     try:
@@ -78,9 +79,8 @@ def load_tokens():
     except (FileNotFoundError, json.JSONDecodeError):
         return None, None
 
-# ─── Claim state (actual claim amounts, not theoretical rates) ──────────────────
+# ─── Claim state (actual claim amounts) ───────────────────────────────────────
 def save_claim_state(claimed=None, balance=None):
-    """Save actual claim amount so dashboard shows real per-claim / per-day."""
     state = load_claim_state()
     if claimed is not None:
         state["last_claim"] = claimed
@@ -106,11 +106,11 @@ def get_actual_rate(state):
     """Compute actual per-claim and per-day from claim history."""
     history = state.get("history", [])
     if not history:
-        return 0, 0  # per_claim, per_day
+        return 0, 0
     avg = sum(history) / len(history)
-    per_day = avg * 6  # 6 cycles per day (4h each)
-    return round(avg, 1), round(per_day, 1)
+    return round(avg, 1), round(avg * 6, 1)  # 6 cycles per day (4h each)
 
+# ─── JWT helpers ────────────────────────────────────────────────────────────────
 def jwt_exp(token):
     try:
         payload = token.split(".")[1]
@@ -145,6 +145,13 @@ def headers(token=None, device_id=None):
         h["Authorization"] = f"Bearer {token}"
     return h
 
+def safe_json(r):
+    """Parse JSON response safely, return {} on failure."""
+    try:
+        return r.json()
+    except Exception:
+        return {}
+
 def api_get(path, token, device_id, params=None):
     h = headers(token, device_id)
     h["x-date"] = str(int(time.time() * 1000))
@@ -161,13 +168,13 @@ def api_post(path, data, token=None, device_id=None):
 def check_login_id(cfg):
     r = api_get(f"/auth/loginId-exist-check/{cfg['loginId']}", token=None,
                 device_id=cfg["deviceId"], params={"deviceId": cfg["deviceId"]})
-    return r.json().get("statusCode") == 200
+    return safe_json(r).get("statusCode") == 200
 
 def check_passcode(cfg):
     r = api_post("/auth/check-passcode?v=2",
                  {"loginId": str(cfg["loginId"]), "passcode": str(cfg["passcode"]), "deviceId": cfg["deviceId"]},
                  device_id=cfg["deviceId"])
-    d = r.json()
+    d = safe_json(r)
     if d.get("statusCode") == 200:
         data = d.get("data", {})
         return data.get("email") or (data.get("verificationInfo") or [{}])[0].get("gmail")
@@ -178,11 +185,8 @@ def send_otp(cfg, email_addr):
                  {"loginId": str(cfg["loginId"]), "passcode": str(cfg["passcode"]),
                   "email": email_addr, "deviceId": cfg["deviceId"]},
                  device_id=cfg["deviceId"])
-    try:
-        d = r.json()
-        return r.status_code == 200 and d.get("statusCode") == 200
-    except Exception:
-        return False
+    d = safe_json(r)
+    return r.status_code == 200 and d.get("statusCode") == 200
 
 def grab_otp(cfg, email_addr, after_ts):
     """Poll IMAP for a fresh login OTP. Only accept emails sent after after_ts."""
@@ -221,7 +225,7 @@ def grab_otp(cfg, email_addr, after_ts):
                                 try: body = p.get_payload(decode=True).decode(errors="ignore")
                                 except: pass
                     else:
-                        try: body = p.get_payload(decode=True).decode(errors="ignore")
+                        try: body = msg.get_payload(decode=True).decode(errors="ignore")
                         except: pass
                     matches = re.findall(r"\b(\d{6})\b", body or "")
                     if matches:
@@ -237,7 +241,7 @@ def verify_otp(cfg, otp):
     r = api_post("/auth/check-otp-email-verify-login?v=2",
                  {"loginId": str(cfg["loginId"]), "otp": otp, "deviceId": cfg["deviceId"]},
                  device_id=cfg["deviceId"])
-    d = r.json()
+    d = safe_json(r)
     if d.get("statusCode") == 200:
         data = d.get("data", {})
         return data.get("accessToken"), data.get("refreshToken")
@@ -291,7 +295,7 @@ def do_refresh(cfg, refresh_token):
     log("step", "Refreshing token...")
     try:
         r = api_post("/auth/token", {"refreshToken": refresh_token}, device_id=cfg["deviceId"])
-        d = r.json()
+        d = safe_json(r)
         if d.get("statusCode") == 200:
             data = d.get("data", {})
             new_access = data.get("accessToken") or data.get("jwtToken")
@@ -306,21 +310,14 @@ def do_refresh(cfg, refresh_token):
 
 # ─── Get session (login once, never logout) ────────────────────────────────────
 def get_session(cfg, allow_login=True):
-    """Get a valid access token without logging out.
-    Order: stored token → refresh → OTP login (last resort only)."""
+    """Get a valid access token. Order: stored → refresh → OTP login (last resort)."""
     access, refresh = load_tokens()
-
-    # Try stored access token
     if access and not token_expired(access):
         return access
-
-    # Try refresh (only once, not twice)
     if refresh:
         new_access = do_refresh(cfg, refresh)
         if new_access:
             return new_access
-
-    # Last resort: OTP login
     if not allow_login:
         log("warn", "No valid token. Run: python bot.py --login")
         return None
@@ -328,20 +325,24 @@ def get_session(cfg, allow_login=True):
     access, refresh = do_login(cfg)
     return access
 
-# ─── Claim ─────────────────────────────────────────────────────────────────────
+# ─── API helpers ──────────────────────────────────────────────────────────────
 def get_user_info(token, device_id):
     r = api_get("/auth/current-user-full?include=userInfo,token,isClaimable", token, device_id)
-    d = r.json()
+    d = safe_json(r)
     return d.get("data") if d.get("statusCode") == 200 else None
 
 def check_claimable(token, device_id):
     r = api_get("/token/check-is-claimable", token, device_id)
-    return r.json().get("data", {})
+    return safe_json(r).get("data", {})
+
+def get_balance(token, device_id):
+    data = get_user_info(token, device_id)
+    return data.get("token", {}).get("interlinkGoldTokenAmount", 0) if data else None
 
 def trigger_ads(token, device_id, last_claim):
     try:
         r = api_get(f"/token/get-random-ads-mining-new?totalHhp=1&lastTimeClaim={last_claim}", token, device_id)
-        d = r.json()
+        d = safe_json(r)
         if d.get("statusCode") == 200:
             return d.get("data", {}).get("timeRetry", 10) or 10
     except Exception:
@@ -350,37 +351,27 @@ def trigger_ads(token, device_id, last_claim):
 
 def claim_airdrop(token, device_id):
     r = api_post("/token/claim-airdrop", {}, token=token, device_id=device_id)
-    return r.json()
+    return safe_json(r)
 
-# ─── Display ──────────────────────────────────────────────────────────────────
-def fmt_pad(text, width):
-    """Pad text to width, handling emoji width issues."""
-    # Strip ANSI codes for length calc
-    import re as _re
-    clean = _re.sub(r'\033\[[0-9;]*m', '', str(text))
-    return str(text) + " " * max(0, width - len(clean))
-
+# ─── Rates ────────────────────────────────────────────────────────────────────
 def get_rates(ti, state=None):
-    """Extract rate info. Uses actual claim history if available, falls back to API rates."""
-    mining     = ti.get("dailyMiningRate", 0) or 0
-    grp_rate   = ti.get("groupMiningRate", 0) or 0
-    ref_dir    = ti.get("directReferralsHashRate", 0) or 0
-    ref_ind    = ti.get("indirectReferralsHashRate", 0) or 0
-    total_rate = mining + grp_rate + ref_dir + ref_ind
-    rate_4h    = round(total_rate / 6, 2) if total_rate else 0
-    # Actual claim amounts from history (what you really get)
+    """Extract rate info for dashboard + notifications."""
+    mining   = ti.get("dailyMiningRate", 0) or 0
+    group    = ti.get("groupMiningRate", 0) or 0
+    ref_dir  = ti.get("directReferralsHashRate", 0) or 0
+    ref_ind  = ti.get("indirectReferralsHashRate", 0) or 0
     actual_per_claim, actual_per_day = (0, 0)
     if state:
         actual_per_claim, actual_per_day = get_actual_rate(state)
     return {
-        "mining": mining, "group": grp_rate,
+        "mining": mining, "group": group,
         "ref_dir": ref_dir, "ref_ind": ref_ind,
-        "total": total_rate, "rate_4h": rate_4h,
         "actual_per_claim": actual_per_claim,
         "actual_per_day": actual_per_day,
         "has_history": actual_per_claim > 0,
     }
 
+# ─── Dashboard ─────────────────────────────────────────────────────────────────
 def show_dashboard(token, device_id):
     data = get_user_info(token, device_id)
     if not data:
@@ -404,13 +395,12 @@ def show_dashboard(token, device_id):
     print(f"  {C.B}╠{'═'*W}╣{C.R}")
     print(f"  {C.B}║{C.R}  ITLG Balance   {str(gold):>28}  {C.B}║{C.R}")
     print(f"  {C.B}║{C.R}  Last claim     {str(state.get('last_claim', 0)) + ' ITLG':>28}  {C.B}║{C.R}")
-    # Show ACTUAL rate (what you really get per claim / per day)
     if rates["has_history"]:
         print(f"  {C.B}║{C.R}  Per claim      {str(rates['actual_per_claim']) + ' ITLG':>28}  {C.B}║{C.R}")
         print(f"  {C.B}║{C.R}  Per day        {str(rates['actual_per_day']) + ' ITLG':>28}  {C.B}║{C.R}")
     else:
-        print(f"  {C.B}║{C.R}  Per claim      {'~17 ITLG (est)':>28}  {C.B}║{C.R}")
-        print(f"  {C.B}║{C.R}  Per day        {'~102 ITLG (est)':>28}  {C.B}║{C.R}")
+        print(f"  {C.B}║{C.R}  Per claim      {'waiting first claim':>28}  {C.B}║{C.R}")
+        print(f"  {C.B}║{C.R}  Per day        {'waiting first claim':>28}  {C.B}║{C.R}")
     if has_group:
         print(f"  {C.B}║{C.R}  Group          {str(rates['group']) + '/day':>28}  {C.B}║{C.R}")
     else:
@@ -428,14 +418,43 @@ def format_countdown(seconds):
     s = int(seconds % 60)
     return f"{h:02d}h {m:02d}m {s:02d}s"
 
-# ─── Claim ─────────────────────────────────────────────────────────────────────
-def get_balance(token, device_id):
-    """Get current ITLG balance."""
-    data = get_user_info(token, device_id)
-    if data:
-        return data.get("token", {}).get("interlinkGoldTokenAmount", 0)
-    return None
+# ─── Telegram notification ────────────────────────────────────────────────────
+def send_telegram_notif(cfg, info):
+    """Send a Telegram message after successful claim."""
+    bot_token = cfg.get("tgBotToken")
+    chat_id = cfg.get("tgChatId")
+    if not bot_token or not chat_id:
+        return
+    import urllib.parse
+    claimed = info.get("claimed")
+    before = info.get("before")
+    after = info.get("after")
+    per_claim = info.get("rate_per_claim", 0)
+    per_day = info.get("rate_per_day")
+    group_rate = info.get("group_rate", 0)
+    now = datetime.now().strftime("%H:%M:%S")
+    day_line = f"\n📈 Per day: ~{per_day} ITLG (6 claims)" if per_day else ""
+    group_line = f"\n👥 Group: {group_rate}/day (active!)" if group_rate > 0 else "\n👥 Group: pending activation"
+    text = (
+        f"✅ ITLG Claim Success\n\n"
+        f"💰 Claimed: +{claimed} ITLG\n"
+        f"📊 Balance: {before} → {after} ITLG\n"
+        f"⏱️ Per claim: {per_claim} ITLG{day_line}{group_line}\n"
+        f"🕐 {now}\n\n"
+        f"Next claim in 4h."
+    )
+    url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+    payload = {"chat_id": chat_id, "text": text}
+    try:
+        r = requests.post(url, json=payload, timeout=10, verify=False)
+        if r.status_code == 200:
+            log("ok", "Telegram notification sent.")
+        else:
+            log("warn", f"Telegram error: {r.status_code}")
+    except Exception as e:
+        log("warn", f"Telegram notif error: {e}")
 
+# ─── Claim ─────────────────────────────────────────────────────────────────────
 def attempt_claim(cfg, token):
     device_id = cfg["deviceId"]
     ic = check_claimable(token, device_id)
@@ -453,6 +472,7 @@ def attempt_claim(cfg, token):
         return token, False
     ti = user.get("token", {})
     last_claim = ti.get("lastClaimTime") or int(time.time() * 1000)
+    group_rate = ti.get("groupMiningRate", 0) or 0
 
     log("ok", "Claimable! Triggering ads...")
     wait = trigger_ads(token, device_id, last_claim)
@@ -464,14 +484,10 @@ def attempt_claim(cfg, token):
     msg = result.get("message", "")
 
     if status == 200:
-        # Capture balance AFTER claim
         time.sleep(2)
         balance_after = get_balance(token, device_id)
-        claimed = None
-        if balance_before is not None and balance_after is not None:
-            claimed = balance_after - balance_before
+        claimed = (balance_after - balance_before) if balance_before is not None and balance_after is not None else None
         rates = get_rates(ti, load_claim_state())
-        # Save actual claim to state
         save_claim_state(claimed=claimed, balance=balance_after)
         log("ok", f"Claimed! +{claimed if claimed is not None else '?'} ITLG")
         log("info", f"Balance: {balance_before} → {balance_after} ITLG")
@@ -479,7 +495,6 @@ def attempt_claim(cfg, token):
             log("info", f"Avg per claim: {rates['actual_per_claim']} | Per day: {rates['actual_per_day']} ITLG")
         else:
             log("info", f"First claim recorded: {claimed} ITLG")
-        # Telegram notification
         try:
             send_telegram_notif(cfg, {
                 "claimed": claimed,
@@ -487,18 +502,19 @@ def attempt_claim(cfg, token):
                 "after": balance_after,
                 "rate_per_claim": rates["actual_per_claim"] if rates["has_history"] else claimed,
                 "rate_per_day": rates["actual_per_day"] if rates["has_history"] else None,
-                "total_rate": rates["total"],
-                "group_rate": rates["group"],
+                "group_rate": group_rate,
             })
         except Exception as e:
             log("warn", f"Telegram notif failed: {e}")
         show_dashboard(token, device_id)
         return token, True
+
     if status == 400 and "TOO_EARLY" in str(msg).upper():
         log("info", "Already claimed. Wait for next cycle.")
         return token, False
+
     if status == 500:
-        log("err", f"Server error. Retrying in 10s...")
+        log("err", "Server error. Retrying in 10s...")
         time.sleep(10)
         result2 = claim_airdrop(token, device_id)
         if result2.get("statusCode") == 200:
@@ -514,55 +530,17 @@ def attempt_claim(cfg, token):
                     "after": balance_after,
                     "rate_per_claim": rates["actual_per_claim"] if rates["has_history"] else claimed,
                     "rate_per_day": rates["actual_per_day"] if rates["has_history"] else None,
-                    "total_rate": rates["total"],
-                    "group_rate": rates["group"],
+                    "group_rate": group_rate,
                 })
             except Exception:
                 pass
             show_dashboard(token, device_id)
             return token, True
-        log("err", f"Retry failed: {result2.get('message','')}")
+        log("err", f"Retry failed: {result2.get('message', '')}")
         return token, False
+
     log("err", f"Claim failed ({status}): {msg}")
     return token, False
-
-# ─── Telegram notification ─────────────────────────────────────────────────────
-def send_telegram_notif(cfg, info):
-    """Send a Telegram message after successful claim. Requires tgBotToken + tgChatId in config."""
-    bot_token = cfg.get("tgBotToken")
-    chat_id = cfg.get("tgChatId")
-    if not bot_token or not chat_id:
-        return  # silent skip if not configured
-    import urllib.parse
-    claimed = info.get("claimed")
-    before = info.get("before")
-    after = info.get("after")
-    rate_per_claim = info.get("rate_per_claim", 0)
-    rate_per_day = info.get("rate_per_day")
-    group_rate = info.get("group_rate", 0)
-    now = datetime.now().strftime("%H:%M:%S")
-    day_line = f"\n📈 Per day: ~{rate_per_day} ITLG (6 claims)" if rate_per_day else ""
-    group_line = f"\n👥 Group: {group_rate}/day (active!)" if group_rate > 0 else "\n👥 Group: pending activation"
-    text = (
-        f"✅ ITLG Claim Success\n\n"
-        f"💰 Claimed: +{claimed} ITLG\n"
-        f"📊 Balance: {before} → {after} ITLG\n"
-        f"⏱️ Per claim: {rate_per_claim} ITLG{day_line}{group_line}\n"
-        f"🕐 {now}\n\n"
-        f"Next claim in 4h."
-    )
-    url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
-    payload = f"chat_id={urllib.parse.quote(chat_id)}&text={urllib.parse.quote(text)}"
-    try:
-        r = requests.post(url, data=payload,
-                          headers={"Content-Type": "application/x-www-form-urlencoded"},
-                          timeout=10, verify=False)
-        if r.status_code == 200:
-            log("ok", "Telegram notification sent.")
-        else:
-            log("warn", f"Telegram error: {r.status_code}")
-    except Exception as e:
-        log("warn", f"Telegram notif error: {e}")
 
 # ─── Run modes ──────────────────────────────────────────────────────────────────
 def run_once(cfg):

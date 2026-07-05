@@ -112,7 +112,7 @@ def main():
         print(f"\n  {BOLD}Next steps:{RESET}")
         print(f"  1. Run: {CYAN}python bot.py --login{RESET}  (one-time OTP login)")
         print(f"  2. Run: {CYAN}python bot.py{RESET}           (start the bot)")
-        print(f"  3. Or setup cron: {CYAN}*/5 * * * * cd {SCRIPT_DIR} && python3 check_claim.py{RESET}")
+        print(f"  3. Leave it running — it auto-claims every 4h and sends Telegram notifs.")
         print()
     return 0
 

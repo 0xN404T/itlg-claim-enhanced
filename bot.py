@@ -414,7 +414,7 @@ def show_dashboard(token, device_id):
     if has_group:
         print(f"  {C.B}║{C.R}  Group          {str(rates['group']) + '/day':>28}  {C.B}║{C.R}")
     else:
-        print(f"  {C.B}║{C.R}  Group          {'inactive':>28}  {C.B}║{C.R}")
+        print(f"  {C.B}║{C.R}  Group          {'pending activation':>28}  {C.B}║{C.R}")
     print(f"  {C.B}║{C.R}  Referral       {str(round(rates['ref_dir'] + rates['ref_ind'], 2)) + f' ({total_ref} refs)':>28}  {C.B}║{C.R}")
     print(f"  {C.B}║{C.R}  Streak/Burned  {f'{streak} / {burned}':>28}  {C.B}║{C.R}")
     if recoverable and recoverable > 0:
@@ -488,6 +488,7 @@ def attempt_claim(cfg, token):
                 "rate_per_claim": rates["actual_per_claim"] if rates["has_history"] else claimed,
                 "rate_per_day": rates["actual_per_day"] if rates["has_history"] else None,
                 "total_rate": rates["total"],
+                "group_rate": rates["group"],
             })
         except Exception as e:
             log("warn", f"Telegram notif failed: {e}")
@@ -514,6 +515,7 @@ def attempt_claim(cfg, token):
                     "rate_per_claim": rates["actual_per_claim"] if rates["has_history"] else claimed,
                     "rate_per_day": rates["actual_per_day"] if rates["has_history"] else None,
                     "total_rate": rates["total"],
+                    "group_rate": rates["group"],
                 })
             except Exception:
                 pass
@@ -537,13 +539,15 @@ def send_telegram_notif(cfg, info):
     after = info.get("after")
     rate_per_claim = info.get("rate_per_claim", 0)
     rate_per_day = info.get("rate_per_day")
+    group_rate = info.get("group_rate", 0)
     now = datetime.now().strftime("%H:%M:%S")
     day_line = f"\n📈 Per day: ~{rate_per_day} ITLG (6 claims)" if rate_per_day else ""
+    group_line = f"\n👥 Group: {group_rate}/day (active!)" if group_rate > 0 else "\n👥 Group: pending activation"
     text = (
         f"✅ ITLG Claim Success\n\n"
         f"💰 Claimed: +{claimed} ITLG\n"
         f"📊 Balance: {before} → {after} ITLG\n"
-        f"⏱️ Per claim: {rate_per_claim} ITLG{day_line}\n"
+        f"⏱️ Per claim: {rate_per_claim} ITLG{day_line}{group_line}\n"
         f"🕐 {now}\n\n"
         f"Next claim in 4h."
     )

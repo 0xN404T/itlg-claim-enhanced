@@ -224,6 +224,7 @@ def main():
         return
     ti = user.get("token", {})
     balance_before = ti.get("interlinkGoldTokenAmount", 0)
+    group_rate = ti.get("groupMiningRate", 0) or 0
     last_claim = ti.get("lastClaimTime") or int(time.time() * 1000)
 
     # Trigger ads + claim
@@ -242,12 +243,13 @@ def main():
         per_claim, per_day = get_actual_rate(state)
         now = datetime.now().strftime("%H:%M:%S")
         day_line = f"\n📈 Per day: ~{per_day} ITLG (6 claims)" if per_day else ""
+        group_line = f"\n👥 Group: {group_rate}/day (active!)" if group_rate > 0 else "\n👥 Group: pending activation"
         # This goes to stdout → cron delivers to Telegram
         print(
             f"✅ ITLG Claim Success\n\n"
             f"💰 Claimed: +{claimed} ITLG\n"
             f"📊 Balance: {balance_before} → {balance_after} ITLG\n"
-            f"⏱️ Per claim: {per_claim} ITLG{day_line}\n"
+            f"⏱️ Per claim: {per_claim} ITLG{day_line}{group_line}\n"
             f"🕐 {now}\n\n"
             f"Next claim in 4h."
         )
@@ -256,7 +258,7 @@ def main():
             f"✅ ITLG Claim Success\n\n"
             f"💰 Claimed: +{claimed} ITLG\n"
             f"📊 Balance: {balance_before} → {balance_after} ITLG\n"
-            f"⏱️ Per claim: {per_claim} ITLG{day_line}\n"
+            f"⏱️ Per claim: {per_claim} ITLG{day_line}{group_line}\n"
             f"🕐 {now}\n\n"
             f"Next claim in 4h."
         ))

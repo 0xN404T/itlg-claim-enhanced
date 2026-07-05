@@ -59,10 +59,15 @@ def load_config():
     return cfg
 
 # ─── Token store ────────────────────────────────────────────────────────────────
-def save_tokens(access, refresh):
+def save_tokens(access, refresh, backup=True):
     with open(TOKEN_FILE, "w") as f:
         json.dump({"access": access, "refresh": refresh or "", "saved_at": int(time.time())}, f)
     os.chmod(TOKEN_FILE, 0o600)
+    if backup:
+        backup_path = os.path.join(SCRIPT_DIR, "token-backup.json")
+        with open(backup_path, "w") as f:
+            json.dump({"access": access, "refresh": refresh or "", "saved_at": int(time.time())}, f)
+        os.chmod(backup_path, 0o600)
 
 def load_tokens():
     try:
@@ -238,6 +243,7 @@ def do_login(cfg):
         if access:
             log("ok", "Login successful!")
             save_tokens(access, refresh)
+            log("info", "Token saved to token.json + token-backup.json")
             return access, refresh
         log("warn", "OTP expired, resending...")
 

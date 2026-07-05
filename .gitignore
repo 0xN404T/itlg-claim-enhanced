@@ -1,5 +1,6 @@
 config.json
 token.json
+token-backup.json
 accounts.json
 tokens/
 *.log

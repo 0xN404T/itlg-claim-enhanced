@@ -14,12 +14,21 @@ Config: config.json (run `python setup.py` for interactive setup)
 """
 
 import sys, os, json, time, imaplib, email, re, hashlib, base64, argparse, random
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from email.utils import parsedate_to_datetime
 
 import requests
 import urllib3
 urllib3.disable_warnings()
+
+# ─── WIB timezone (UTC+7) ─────────────────────────────────────────────────────
+WIB = timezone(timedelta(hours=7))
+def now_wib():
+    """Current time in WIB (Asia/Jakarta)."""
+    return datetime.now(WIB)
+def fmt_wib(fmt="%Y-%m-%d %H:%M:%S"):
+    """Formatted WIB timestamp string."""
+    return now_wib().strftime(fmt)
 
 # ─── Config ───────────────────────────────────────────────────────────────────
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -451,7 +460,7 @@ def send_telegram_notif(cfg, info):
     per_claim = info.get("rate_per_claim", 0)
     per_day = info.get("rate_per_day")
     group_rate = info.get("group_rate", 0)
-    now = datetime.now().strftime("%H:%M:%S")
+    now = fmt_wib("%H:%M:%S WIB")
     day_line = f"\n📈 Per day: ~{per_day} ITLG (6 claims)" if per_day else ""
     group_line = f"\n👥 Group: {group_rate}/day (active!)" if group_rate > 0 else "\n👥 Group: pending activation"
     text = (
@@ -568,7 +577,7 @@ def attempt_claim(cfg, token):
 
 # ─── Run modes ──────────────────────────────────────────────────────────────────
 def run_once(cfg):
-    log("info", f"Run: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    log("info", f"Run: {fmt_wib()}")
     token = get_session(cfg, allow_login=False)
     if not token:
         return
@@ -629,6 +638,8 @@ def show_status():
     updated = state.get("updated_at", 0)
     ago = int(time.time() - updated)
     h, m = ago // 3600, (ago % 3600) // 60
+    # WIB timestamp for last claim
+    last_claim_wib = datetime.fromtimestamp(updated, tz=WIB).strftime("%H:%M WIB") if updated > 0 else "N/A"
 
     # Bot running?
     try:
@@ -655,7 +666,7 @@ def show_status():
     print(f"  {C.CY}{C.B}╚══════════════════════════════════════╝{C.R}\n")
     print(f"  🤖 Bot: {bot_status}")
     print(f"  💰 Balance: {bal} ITLG")
-    print(f"  🎯 Last claim: +{lc} ITLG ({h}h {m}m ago)")
+    print(f"  🎯 Last claim: +{lc} ITLG ({h}h {m}m ago, {last_claim_wib})")
     if history:
         print(f"  📊 History: {' → '.join(str(x) for x in history[-5:])}")
     print(f"  👥 Refs: {refs}")

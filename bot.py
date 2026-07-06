@@ -801,7 +801,8 @@ def run_loop(cfg):
         next_label = "mining" if mining_remain < group_remain else "group"
         next_secs = min(mining_remain, group_remain)
 
-        print(f"\r  {C.CY}⏰ Mining: {format_countdown(mining_remain)} | Group: {format_countdown(group_remain)}{C.R}     ", end="", flush=True)
+        if mining_remain > 0 or group_remain > 0:
+            print(f"\r  {C.CY}⏰ Mining: {format_countdown(mining_remain)} | Group: {format_countdown(group_remain)}{C.R}     ", end="", flush=True)
 
         if mining_remain <= 0:
             print()
@@ -846,10 +847,82 @@ def run_loop(cfg):
         time.sleep(10)
 
 
-# ─── Status check (no login needed) ───────────────────────────────────────────
+# ─── Cleanup old log/cache (auto, runs on bot start) ──────────────────────────
+def cleanup_old_files(max_age_days=2):
+    """Delete log entries older than max_age_days. Keeps file small, prevents bloat."""
+    import glob
+    now = time.time()
+    cutoff = now - (max_age_days * 86400)
+    
+    # 1. Trim interlink.log — keep only last 500 lines
+    log_file = os.path.join(SCRIPT_DIR, "interlink.log")
+    if os.path.exists(log_file):
+        try:
+            with open(log_file, "r") as f:
+                lines = f.readlines()
+            if len(lines) > 500:
+                with open(log_file, "w") as f:
+                    f.writelines(lines[-500:])
+        except Exception:
+            pass
+    
+    # 2. Delete old backup files older than max_age_days
+    for pattern in ["token-backup-*.json", "claim_state-*.json"]:
+        for f in glob.glob(os.path.join(SCRIPT_DIR, pattern)):
+            try:
+                if os.path.getmtime(f) < cutoff:
+                    os.remove(f)
+            except Exception:
+                pass
+    
+    # 3. Clean old __pycache__
+    pycache = os.path.join(SCRIPT_DIR, "__pycache__")
+    if os.path.isdir(pycache):
+        for f in glob.glob(os.path.join(pycache, "*")):
+            try:
+                if os.path.getmtime(f) < cutoff:
+                    os.remove(f)
+            except Exception:
+                pass
+
+
+# ─── Stop bot ──────────────────────────────────────────────────────────────────
+def stop_bot():
+    """Stop the running bot gracefully."""
+    import subprocess, signal
+    try:
+        pids = subprocess.getoutput('pgrep -f "python3 bot.py"').strip().split("\n")
+        pids = [p for p in pids if p and p != str(os.getpid())]
+        if not pids:
+            log("info", "Bot is not running.")
+            return
+        for pid in pids:
+            try:
+                os.kill(int(pid), signal.SIGTERM)
+                log("ok", f"Sent SIGTERM to PID {pid}")
+            except ProcessLookupError:
+                pass
+            except Exception as e:
+                log("warn", f"Could not kill PID {pid}: {e}")
+        time.sleep(2)
+        # Force kill if still alive
+        still = subprocess.getoutput('pgrep -f "python3 bot.py"').strip()
+        still = [p for p in still.split("\n") if p and p != str(os.getpid())]
+        for pid in still:
+            try:
+                os.kill(int(pid), signal.SIGKILL)
+                log("warn", f"Force killed PID {pid}")
+            except Exception:
+                pass
+        if not still:
+            log("ok", "Bot stopped successfully.")
+    except Exception as e:
+        log("err", f"Stop failed: {e}")
+
+
+# ─── Status check (live API call for accurate timers) ─────────────────────────
 def show_status():
-    """Quick status check from claim_state.json + log — no API call needed."""
-    import subprocess
+    """Live status check — calls API for real timers, not stale log parsing."""
     state = load_claim_state()
     bal = state.get("balance", 0)
     lc = state.get("last_claim", 0)
@@ -860,53 +933,100 @@ def show_status():
     last_claim_wib = datetime.fromtimestamp(updated, tz=WIB).strftime("%H:%M WIB") if updated > 0 else "N/A"
 
     # Bot running?
+    import subprocess
     try:
         pid = subprocess.getoutput('pgrep -f "python3 bot.py"').strip().split("\n")[0]
         bot_status = f"✅ Running (PID {pid})" if pid else "❌ NOT running"
     except Exception:
         bot_status = "❓ Unknown"
 
-    # Parse log for extras
+    # ─── LIVE API CALL for real timers ───
+    cfg = load_config()
+    token = get_session(cfg, allow_login=False)
+    
+    mining_next_str = "N/A"
+    group_next_str = "N/A"
     refs = "N/A"
-    nxt = "~4h"
-    rec = "N/A"
     streak_burned = "N/A"
+    rec = "N/A"
     group_status = "N/A"
-    group_next = "N/A"
     per_claim = "N/A"
     per_day = "N/A"
     last_group_claim = "N/A"
     last_recovery = "N/A"
+
+    if token:
+        device_id = cfg["deviceId"]
+        
+        # Live mining timer
+        try:
+            ic = check_claimable(token, device_id)
+            nf = ic.get("nextFrame")
+            if nf:
+                remain = max(0, int((nf - time.time() * 1000) / 1000))
+                mining_next_str = format_countdown(remain)
+            else:
+                mining_next_str = "claimable now!"
+        except Exception as e:
+            mining_next_str = f"API error: {e}"
+        
+        # Live group timer
+        try:
+            gdata = get_group_mining_list(token, device_id)
+            if gdata:
+                groups = gdata.get("groups", [])
+                gnext = gdata.get("nextTimeClaim")
+                already = gdata.get("requesterHasClaimedToday", False)
+                total_reward = sum(g.get("totalReward", 0) for g in groups)
+                if gnext:
+                    remain = max(0, int((gnext - time.time() * 1000) / 1000))
+                    group_next_str = format_countdown(remain)
+                else:
+                    group_next_str = "N/A"
+                if already:
+                    group_status = f"claimed today ({len(groups)} groups, pool: {total_reward})"
+                elif gdata.get("isClaimable"):
+                    group_status = f"claimable! ({len(groups)} groups, pool: {total_reward})"
+                else:
+                    group_status = f"pending ({len(groups)} groups, pool: {total_reward})"
+        except Exception:
+            pass
+        
+        # Live user info for refs/streak/recoverable
+        try:
+            data = get_user_info(token, device_id)
+            if data:
+                ti = data.get("token", {})
+                total_ref = ti.get("totalReferral", 0)
+                ref_dir = ti.get("directReferralsHashRate", 0) or 0
+                ref_ind = ti.get("indirectReferralsHashRate", 0) or 0
+                refs = f"{round(ref_dir + ref_ind, 2)} ({total_ref} refs)"
+                streak = ti.get("burningStreak", 0)
+                burned = ti.get("burnedCycles", 0)
+                streak_burned = f"{streak} / {burned}"
+                rec = f"{ti.get('itlgRecoverable', 0)}"
+                # Update balance from live data
+                bal = ti.get("interlinkGoldTokenAmount", bal)
+        except Exception:
+            pass
+    else:
+        mining_next_str = "⚠️ No token (run: python bot.py --login)"
+
+    # Per claim/day from history
+    if history:
+        avg = round(sum(history) / len(history), 1)
+        per_claim = f"{avg} ITLG"
+        per_day = f"{round(avg * 6, 1)} ITLG"
+
+    # Parse log for last group claim + recovery (these are events, not timers — safe to parse)
     try:
         raw_log = open(os.path.join(SCRIPT_DIR, "interlink.log")).read()
-        r = re.findall(r"Referral\s+([\d.]+ \(\d+ refs\))", raw_log)
-        n = re.findall(r"Next claim in ([\dh ms]+)", raw_log)
-        c = re.findall(r"Recoverable\s+(\d+) ITLG", raw_log)
-        sb = re.findall(r"Streak/Burned\s+(\d+ / \d+)", raw_log)
-        gs = re.findall(r"Group\s+.*?(pending activation|[\d.]+/day)", raw_log)
-        gn = re.findall(r"Group next:\s+([\dh m]+)", raw_log)
-        pc = re.findall(r"Avg per claim:\s+([\d.]+)", raw_log)
-        pd = re.findall(r"Per day:\s+([\d.]+) ITLG", raw_log)
         lgc = re.findall(r"Group mining claimed!\s+\+([\d?]+) ITLG", raw_log)
         lrc = re.findall(r"Recovery complete!\s+\+([\d]+) ITLG", raw_log)
-        if r: refs = r[-1]
-        if n: nxt = n[-1].strip()
-        if c: rec = c[-1]
-        if sb: streak_burned = sb[-1]
-        if gs: group_status = gs[-1]
-        if gn: group_next = gn[-1].strip()
-        if pc: per_claim = pc[-1]
-        if pd: per_day = pd[-1]
         if lgc: last_group_claim = f"+{lgc[-1]} ITLG"
         if lrc: last_recovery = f"+{lrc[-1]} ITLG"
     except Exception:
         pass
-
-    # Compute from state if log parsing failed
-    if per_claim == "N/A" and history:
-        avg = round(sum(history) / len(history), 1)
-        per_claim = f"{avg} ITLG"
-        per_day = f"{round(avg * 6, 1)} ITLG"
 
     print(f"\n  {C.CY}{C.B}╔══════════════════════════════════════╗{C.R}")
     print(f"  {C.CY}{C.B}║   Interlink ITLG — Status             ║{C.R}")
@@ -926,15 +1046,17 @@ def show_status():
     print(f"  👥 Group: {group_status}")
     if last_group_claim != "N/A":
         print(f"  🎯 Last group claim: {last_group_claim}")
-    print(f"  ⏳ Group next: {group_next}")
-    print(f"  ⏳ Mining next: {nxt}")
+    print(f"  ⏳ Group next: {group_next_str}")
+    print(f"  ⏳ Mining next: {mining_next_str}")
     print()
 
 def main():
     parser = argparse.ArgumentParser(description="Interlink Labs Auto Claim")
     parser.add_argument("--once", action="store_true", help="Single run, then exit")
     parser.add_argument("--login", action="store_true", help="Force re-login via OTP")
-    parser.add_argument("--status", action="store_true", help="Quick status check (no login needed)")
+    parser.add_argument("--status", action="store_true", help="Live status check (API call)")
+    parser.add_argument("--stop", action="store_true", help="Stop the running bot")
+    parser.add_argument("--restart", action="store_true", help="Stop then start the bot")
     args = parser.parse_args()
 
     print(f"\n  {C.CY}{C.B}╔════════════════════════════════════╗{C.R}")
@@ -957,13 +1079,58 @@ def main():
         show_status()
         return
 
+    if args.stop:
+        stop_bot()
+        return
+
+    if args.restart:
+        stop_bot()
+        time.sleep(3)
+        log("info", "Starting fresh...")
+        # Continue to run_loop below
+
     if args.once:
         run_once(cfg)
-    else:
+        return
+
+    # ─── Main loop with crash-proof auto-restart ───
+    cleanup_old_files(max_age_days=2)
+    
+    # Don't start if already running
+    import subprocess
+    existing = subprocess.getoutput('pgrep -f "python3 bot.py"').strip().split("\n")
+    existing = [p for p in existing if p and p != str(os.getpid())]
+    if existing and not args.restart:
+        log("warn", f"Bot already running (PID {existing[0]}). Use --stop first or --status to check.")
+        return
+
+    MAX_RESTARTS = 50
+    restart_count = 0
+    while restart_count < MAX_RESTARTS:
         try:
             run_loop(cfg)
         except KeyboardInterrupt:
             print(f"\n\n  {C.DIM}Stopped.{C.R}\n")
+            break
+        except Exception as e:
+            restart_count += 1
+            log("err", f"Crash #{restart_count}: {e}")
+            log("info", f"Auto-restart in 30s... (attempt {restart_count}/{MAX_RESTARTS})")
+            try:
+                send_telegram_notif(cfg, {
+                    "claimed": 0, "before": 0, "after": 0,
+                    "rate_per_claim": 0, "rate_per_day": None, "group_rate": 0,
+                })
+            except Exception:
+                pass
+            time.sleep(30)
+            # Clean up before restart
+            cleanup_old_files(max_age_days=2)
+            log("step", f"Restarting... (attempt {restart_count}/{MAX_RESTARTS})")
+            continue
+    
+    if restart_count >= MAX_RESTARTS:
+        log("err", f"Max restarts ({MAX_RESTARTS}) reached. Bot stopped. Check logs.")
 
 if __name__ == "__main__":
     main()

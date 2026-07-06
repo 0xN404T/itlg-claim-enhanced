@@ -100,9 +100,11 @@ def main():
         "tgChatId": tg_chat_id,
     }
 
-    # Auto-generate deviceId if empty
+    # Auto-generate deviceId — random per install (NOT md5 of loginId)
+    # Interlink may silent-drop OTP from deviceId patterns that look bot-like
     if not cfg["deviceId"]:
-        cfg["deviceId"] = hashlib.md5(loginId.encode()).hexdigest()[:16]
+        import secrets
+        cfg["deviceId"] = secrets.token_hex(8)  # 16-char random hex (Android ANDROID_ID format)
         print(f"\n  {GREEN}✅ Auto-generated device ID: {cfg['deviceId']}{RESET}")
 
     # Save
@@ -129,7 +131,13 @@ def main():
         print(f"\n  {BOLD}Next steps:{RESET}")
         print(f"  1. Run: {CYAN}python bot.py --login{RESET}  (one-time OTP login)")
         print(f"  2. Run: {CYAN}python bot.py{RESET}           (start the bot)")
-        print(f"  3. Leave it running — it auto-claims every 4h and sends Telegram notifs.")
+        print(f"  3. Leave it running — it auto-claims every 4h + group mining 24h, sends Telegram notifs.")
+        print(f"\n  {BOLD}⚠️  OTP not arriving?{RESET}")
+        print(f"  {DIM}  • Check Spam/Junk folder in Gmail{RESET}")
+        print(f"  {DIM}  • Wait 1-2 minutes — Interlink can be slow{RESET}")
+        print(f"  {DIM}  • Make sure Gmail App Password is correct (not your Gmail password){RESET}")
+        print(f"  {DIM}  • If OTP still doesn't arrive, try logging in from the InterLink app first,{RESET}")
+        print(f"  {DIM}    then run bot.py --login (the app registers your device with Interlink){RESET}")
         print()
     return 0
 

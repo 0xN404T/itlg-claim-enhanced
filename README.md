@@ -127,9 +127,17 @@ This reads local files (`claim_state.json` + `interlink.log`) — no API call, n
   ⏳ Next claim: 03h 40m 17s
 ```
 
-## Group Mining
+## Group Mining (24h cycle)
 
-The bot **automatically claims group mining every cycle** — it uses the same endpoint as solo mining (`/token/claim-airdrop`), so every claim includes solo + group + referral earnings all at once.
+The bot **automatically claims group mining every 24 hours** via a separate endpoint (`/group-mining/claim-group-mining`). One claim per account covers ALL your security groups at once.
+
+The dashboard shows two timers:
+```
+⏰ Mining: 01h 58m 21s | Group: 22h 58m 21s
+```
+
+- **Mining** — solo mining claim every 4h (`/token/claim-airdrop`)
+- **Group** — security group mining claim every 24h (`/group-mining/claim-group-mining`)
 
 If the dashboard shows **"pending activation"**, it means your group mining rate is still `0` on the server. This happens when:
 
@@ -137,7 +145,7 @@ If the dashboard shows **"pending activation"**, it means your group mining rate
 - Your group doesn't have enough active members (they need to be KYC-verified and have claimed at least once)
 - The group mining cycle hasn't started yet (it may need one full cycle to activate)
 
-Once the server sets your `groupMiningRate` above 0, the bot picks it up automatically — no code changes needed. Your per-claim amount increases and the dashboard shows the group rate.
+Once the server sets your `groupMiningRate` above 0, the bot picks it up automatically — no code changes needed.
 
 ## Saving Your Token
 
@@ -192,13 +200,26 @@ token-backup.json     # backup copy (gitignored, auto-created)
 claim_state.json      # actual claim history for rate display (gitignored, auto-created)
 ```
 
+## OTP Not Arriving?
+
+If `python bot.py --login` says "Email has been sent" but the OTP never arrives:
+
+1. **Check Spam/Junk** — Gmail sometimes routes Interlink emails to Spam
+2. **Wait 1-2 minutes** — Interlink can be slow to send OTP
+3. **Verify Gmail App Password** — make sure it's the 16-letter App Password, not your Gmail password
+4. **Login from the app first** — open the InterLink app on your phone, login once. This registers your device with Interlink's servers. Then run `python bot.py --login`
+5. **Check IMAP access** — make sure IMAP is enabled in Gmail settings (Settings → See all settings → Forwarding and POP/IMAP → IMAP Access: Enable)
+6. **Retry** — the bot resends OTP automatically (up to 3 times, 3 minutes each)
+
+The bot generates a unique random `deviceId` for each install. If OTP still doesn't arrive after all steps above, try deleting `config.json` and re-running `setup.py` to get a fresh device fingerprint.
+
 ## Notes
 
 - Your token is saved locally with `chmod 600`. Don't share `config.json` or `token.json`.
-- If OTP doesn't arrive, the bot resends automatically (up to 3 times).
+- If OTP doesn't arrive, the bot resends automatically (up to 3 times, 3 minutes each).
 - One script, one account, one dependency (`requests`).
-- Group mining is claimed automatically every cycle. The dashboard shows "pending activation" until the server enables your group's rate.
-- `burnedCycles` and `itlgRecoverable` are display-only — the API has no recovery endpoint yet.
+- Group mining is claimed automatically every 24h via a separate endpoint.
+- `burnedCycles` and `itlgRecoverable` are display-only — the API has a recovery endpoint (`/recovery/claim`) but it's not implemented in the bot yet.
 
 ## Anti-Detection
 

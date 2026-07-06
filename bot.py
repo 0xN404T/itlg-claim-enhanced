@@ -33,10 +33,10 @@ def fmt_wib(fmt="%Y-%m-%d %H:%M:%S"):
 # ─── Config ───────────────────────────────────────────────────────────────────
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 API_BASE   = "https://prod.interlinklabs.ai/api/v1"
-APP_VER    = "5.0.0"
+APP_VER    = "5.0.5"
 CLAIM_INTERVAL = 4 * 60 * 60
-OTP_TIMEOUT    = 120
-OTP_POLL_DELAY = 6
+OTP_TIMEOUT    = 180  # 3 minutes — Interlink can be slow to send OTP
+OTP_POLL_DELAY = 5
 
 CONFIG_FILE = os.path.join(SCRIPT_DIR, "config.json")
 TOKEN_FILE  = os.path.join(SCRIPT_DIR, "token.json")
@@ -67,7 +67,8 @@ def load_config():
     with open(CONFIG_FILE) as f:
         cfg = json.load(f)
     if not cfg.get("deviceId"):
-        cfg["deviceId"] = hashlib.md5(str(cfg["loginId"]).encode()).hexdigest()[:16]
+        import secrets
+        cfg["deviceId"] = secrets.token_hex(8)  # random Android ANDROID_ID format
         with open(CONFIG_FILE, "w") as f:
             json.dump(cfg, f, indent=2)
     # Pick a random device fingerprint if not already set (sticks for this account)
@@ -381,6 +382,76 @@ def claim_airdrop(token, device_id):
     r = api_post("/token/claim-airdrop", {}, token=token, device_id=device_id)
     return safe_json(r)
 
+# ─── Recovery (burn cycle recovery, check every claim cycle) ──────────────────
+def check_recovery(token, device_id):
+    """Check if any burned ITLG is recoverable right now."""
+    r = api_get("/recovery/total-recoverable", token, device_id)
+    d = safe_json(r)
+    if d.get("statusCode") == 200:
+        data = d.get("data", {})
+        return data.get("canRecover", False), data.get("totalRecoverable", 0)
+    return False, 0
+
+def get_recoverable_burns(token, device_id):
+    """Get list of burn transactions that can be recovered."""
+    r = api_get("/recovery/my", token, device_id)
+    d = safe_json(r)
+    if d.get("statusCode") == 200:
+        burns = d.get("data", {}).get("data", [])
+        return [b for b in burns if b.get("isRecoverable")]
+    return []
+
+def attempt_recovery(cfg, token):
+    """Check + claim recovery if available. Returns (token, recovered_amount)."""
+    device_id = cfg["deviceId"]
+    can_recover, total = check_recovery(token, device_id)
+    if not can_recover or total <= 0:
+        return token, 0
+
+    log("ok", f"Recovery available! {total} ITLG recoverable. Fetching burn transactions...")
+    burns = get_recoverable_burns(token, device_id)
+    if not burns:
+        log("info", "Recovery: canRecover=true but no recoverable burns found. Trying next cycle.")
+        return token, 0
+
+    balance_before = get_balance(token, device_id)
+    recovered_total = 0
+    for burn in burns:
+        tid = burn.get("transactionId")
+        if not tid:
+            continue
+        log("step", f"Recovering burn: {tid} ({burn.get('amount', 0)} ITLG)...")
+        r = api_post("/recovery/claim", {"transactionId": tid}, token=token, device_id=device_id)
+        result = safe_json(r)
+        status = result.get("statusCode")
+        msg = result.get("message", "")
+        if status == 200 or status == 201:
+            amt = burn.get("amount", 0)
+            recovered_total += amt
+            log("ok", f"Recovered! +{amt} ITLG from {tid}")
+            time.sleep(2)
+        else:
+            log("warn", f"Recovery failed for {tid}: {msg}")
+
+    if recovered_total > 0:
+        time.sleep(2)
+        balance_after = get_balance(token, device_id)
+        log("ok", f"Recovery complete! +{recovered_total} ITLG recovered")
+        if balance_before is not None and balance_after is not None:
+            log("info", f"Balance: {balance_before} → {balance_after} ITLG")
+        try:
+            send_telegram_notif(cfg, {
+                "claimed": recovered_total,
+                "before": balance_before,
+                "after": balance_after,
+                "rate_per_claim": recovered_total,
+                "rate_per_day": None,
+                "group_rate": 0,
+            })
+        except Exception:
+            pass
+    return token, recovered_total
+
 # ─── Group mining (24h cycle, 1 claim = all groups) ───────────────────────────
 GROUP_INTERVAL = 24 * 60 * 60  # 24 hours
 
@@ -681,6 +752,14 @@ def run_once(cfg):
         remain = int((group_next - time.time() * 1000) / 1000)
         log("info", f"Group mining next in {format_countdown(max(0, remain))}")
 
+    # Recovery check
+    log("info", "Checking recovery...")
+    token, recovered = attempt_recovery(cfg, token)
+    if recovered > 0:
+        log("ok", f"Recovered {recovered} ITLG from burned cycles!")
+    else:
+        log("info", "Recovery: nothing to recover yet.")
+
 def run_loop(cfg):
     log("info", "Loop mode. Mining 4h + Group mining 24h.")
     token = get_session(cfg)
@@ -695,6 +774,11 @@ def run_loop(cfg):
 
     # Group mining initial check
     token, _, group_next = attempt_group_claim(cfg, token)
+
+    # Recovery initial check
+    token, recovered = attempt_recovery(cfg, token)
+    if recovered > 0:
+        show_dashboard(token, cfg["deviceId"])
 
     # Get timers
     ic = check_claimable(token, cfg["deviceId"])
@@ -727,6 +811,8 @@ def run_loop(cfg):
             if token:
                 token, claimed = attempt_claim(cfg, token)
                 if claimed:
+                    # Check recovery after successful mining claim
+                    token, _ = attempt_recovery(cfg, token)
                     ic = check_claimable(token, cfg["deviceId"])
                     mining_next = ic.get("nextFrame") or (time.time() * 1000 + CLAIM_INTERVAL * 1000)
                 else:

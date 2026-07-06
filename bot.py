@@ -925,6 +925,10 @@ def run_loop(cfg):
     log("info", f"Group next:  {format_countdown((group_next - time.time() * 1000) / 1000)}")
 
     while True:
+        # Check stopfile
+        if os.path.exists(STOP_FILE):
+            log("info", "Stop signal received. Exiting run_loop.")
+            return
         now_ms = time.time() * 1000
         mining_remain = max(0, (mining_next - now_ms) / 1000)
         group_remain = max(0, (group_next - now_ms) / 1000)
@@ -1017,35 +1021,35 @@ def cleanup_old_files(max_age_days=2):
 
 
 # ─── Stop bot ──────────────────────────────────────────────────────────────────
+STOP_FILE = os.path.join(SCRIPT_DIR, ".stop")
+
 def stop_bot():
-    """Stop the running bot gracefully."""
+    """Stop the running bot gracefully using stopfile."""
+    # Write stopfile — the running bot checks for this and exits cleanly
+    with open(STOP_FILE, "w") as f:
+        f.write(str(int(time.time())))
+    log("info", "Stop signal sent. Bot will exit within 10 seconds.")
+    # Also try SIGTERM as backup
     import subprocess, signal
     try:
-        pids = subprocess.getoutput('pgrep -f "python3 bot.py"').strip().split("\n")
-        pids = [p for p in pids if p and p != str(os.getpid())]
-        if not pids:
-            log("info", "Bot is not running.")
-            return
+        pids = subprocess.getoutput('pgrep -f "python3 bot\\.py$"').strip().split("\n")
+        my_pid = str(os.getpid())
+        pids = [p for p in pids if p and p != my_pid and p.strip()]
         for pid in pids:
             try:
                 os.kill(int(pid), signal.SIGTERM)
-            except ProcessLookupError:
+            except (ProcessLookupError, ValueError):
                 pass
-            except Exception as e:
-                log("warn", f"Could not kill: {e}")
-        time.sleep(2)
-        # Force kill if still alive
-        still = subprocess.getoutput('pgrep -f "python3 bot.py"').strip()
-        still = [p for p in still.split("\n") if p and p != str(os.getpid())]
-        for pid in still:
-            try:
-                os.kill(int(pid), signal.SIGKILL)
-            except Exception:
-                pass
-        if not still:
-            log("ok", "Bot stopped successfully.")
+        if pids:
+            log("ok", f"Sent stop signal to {len(pids)} process(es).")
+        else:
+            log("info", "No running bot process found (but stopfile created).")
     except Exception as e:
-        log("err", f"Stop failed: {e}")
+        log("warn", f"Could not signal process: {e}")
+    # Clean up stopfile after 15s
+    time.sleep(2)
+    if os.path.exists(STOP_FILE):
+        os.remove(STOP_FILE)
 
 
 # ─── Status check (live API call for accurate timers) ─────────────────────────
@@ -1070,6 +1074,11 @@ def show_status():
 
     # ─── LIVE API CALL for real timers ───
     cfg = load_config()
+    # Auto-restore token from backup if missing
+    if not os.path.exists(TOKEN_FILE) and os.path.exists(os.path.join(SCRIPT_DIR, "token-backup.json")):
+        import shutil
+        shutil.copy2(os.path.join(SCRIPT_DIR, "token-backup.json"), TOKEN_FILE)
+        os.chmod(TOKEN_FILE, 0o600)
     token = get_session(cfg, allow_login=False)
     
     mining_next_str = "N/A"
@@ -1205,11 +1214,24 @@ def main():
         return
 
     if args.login_face:
+        # Backup existing token before face login
         if os.path.exists(TOKEN_FILE):
-            os.remove(TOKEN_FILE)
+            import shutil
+            shutil.copy2(TOKEN_FILE, TOKEN_FILE + ".pre-login")
         access, _ = do_face_login(cfg)
         if access:
             log("ok", "Face login complete. Run: python bot.py")
+            # Clean up pre-login backup on success
+            pre = TOKEN_FILE + ".pre-login"
+            if os.path.exists(pre):
+                os.remove(pre)
+        else:
+            # Restore previous token if face login failed
+            pre = TOKEN_FILE + ".pre-login"
+            if os.path.exists(pre):
+                import shutil
+                shutil.move(pre, TOKEN_FILE)
+                log("info", "Restored previous token (face login failed).")
         return
 
     if args.status:
@@ -1244,6 +1266,14 @@ def main():
     MAX_RESTARTS = 50
     restart_count = 0
     while restart_count < MAX_RESTARTS:
+        # Check stopfile — exit cleanly if --stop was called
+        if os.path.exists(STOP_FILE):
+            log("info", "Stop signal received. Exiting.")
+            try:
+                os.remove(STOP_FILE)
+            except Exception:
+                pass
+            break
         try:
             run_loop(cfg)
         except KeyboardInterrupt:

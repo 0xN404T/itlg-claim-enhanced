@@ -6,6 +6,7 @@ Usage:
   python bot.py              # loop mode (live countdown, auto-claim every 4h)
   python bot.py --once        # single run, check + claim if available, exit
   python bot.py --login       # force re-login (trigger OTP)
+  python bot.py --login-face --photo selfie.jpg  # face login with photo file
 
 The bot auto-claims every 4h and sends a Telegram notification on success
 (if tgBotToken + tgChatId are set in config.json).
@@ -346,13 +347,16 @@ def login_with_face(cfg, image_key):
                  device_id=cfg["deviceId"])
     return safe_json(r)
 
-def do_face_login(cfg):
+def do_face_login(cfg, photo_override=None):
     """Full face login flow: verify passcode → get presigned URL → upload photo → login.
+    Args:
+        cfg: config dict
+        photo_override: if set, use this photo path instead of cfg['facePhoto']
     Returns (access_token, refresh_token) or (None, None).
     """
     lid = cfg.get("loginId", "")
     pwd = cfg.get("passcode", "")
-    photo_path = cfg.get("facePhoto", "")
+    photo_path = photo_override or cfg.get("facePhoto", "")
 
     if not all([lid, pwd]):
         log("err", "Missing loginId or passcode in config.")
@@ -1186,12 +1190,12 @@ def show_status():
     print(f"  ⏳ Group next: {group_next_str}")
     print(f"  ⏳ Mining next: {mining_next_str}")
     print()
-
 def main():
     parser = argparse.ArgumentParser(description="Interlink Labs Auto Claim")
     parser.add_argument("--once", action="store_true", help="Single run, then exit")
     parser.add_argument("--login", action="store_true", help="Force re-login via OTP")
     parser.add_argument("--login-face", action="store_true", help="Login with face photo (selfie)")
+    parser.add_argument("--photo", type=str, default=None, help="Selfie photo path (use with --login-face)")
     parser.add_argument("--status", action="store_true", help="Live status check (API call)")
     parser.add_argument("--stop", action="store_true", help="Stop the running bot")
     parser.add_argument("--restart", action="store_true", help="Stop then start the bot")
@@ -1218,7 +1222,7 @@ def main():
         if os.path.exists(TOKEN_FILE):
             import shutil
             shutil.copy2(TOKEN_FILE, TOKEN_FILE + ".pre-login")
-        access, _ = do_face_login(cfg)
+        access, _ = do_face_login(cfg, photo_override=args.photo)
         if access:
             log("ok", "Face login complete. Run: python bot.py")
             # Clean up pre-login backup on success

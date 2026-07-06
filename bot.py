@@ -841,7 +841,7 @@ def run_loop(cfg):
                 if not group_next:
                     group_next = time.time() * 1000 + GROUP_INTERVAL * 1000
             else:
-                group_next = time.time() * 1000 + 60 * 1000
+                group_next = time.time() * 1000 + 300 * 1000  # fallback: retry in 5 min (was 1 min)
 
         time.sleep(10)
 

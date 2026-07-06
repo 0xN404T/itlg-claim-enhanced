@@ -86,7 +86,7 @@ def main():
 
     # Face photo for face login (alternative to OTP)
     face_photo_default = existing.get("facePhoto", "")
-    face_photo = ask("Face photo path (selfie.jpg — alternative login tanpa OTP)",
+    face_photo = ask("Face photo path (selfie.jpg — alternative to OTP login)",
                      face_photo_default)
     if face_photo:
         face_photo = face_photo.strip('"').strip("'")

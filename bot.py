@@ -364,7 +364,7 @@ def do_face_login(cfg, photo_override=None):
 
     if not photo_path or not os.path.exists(photo_path):
         log("err", f"Face photo not found: {photo_path}")
-        log("info", "Run: python setup.py (isi facePhoto path)")
+        log("info", "Run: python setup.py (set facePhoto path)")
         return None, None
 
     # Step 1: Verify passcode

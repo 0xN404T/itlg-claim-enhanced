@@ -726,9 +726,10 @@ def attempt_group_claim(cfg, token):
                 "claimed": claimed,
                 "before": balance_before,
                 "after": balance_after,
-                "rate_per_claim": claimed or 0,
+                "rate_per_claim": total_reward,
                 "rate_per_day": None,
                 "group_rate": total_reward,
+                "claim_type": "group",
             })
         except Exception as e:
             log("warn", f"Telegram notif failed: {e}")
@@ -820,9 +821,9 @@ def send_telegram_notif(cfg, info):
     per_claim = info.get("rate_per_claim", 0)
     per_day = info.get("rate_per_day")
     group_rate = info.get("group_rate", 0)
+    claim_type = info.get("claim_type", "mine")  # "mine" or "group"
     now = fmt_wib("%H:%M:%S WIB")
-    day_line = f"\n📈 Per day: ~{per_day} ITLG (6 claims)" if per_day else ""
-    group_line = f"\n👥 Group: {group_rate}/day (active!)" if group_rate > 0 else "\n👥 Group: pending activation"
+
     # Check if this is a crash alert (claimed=0, before=0, after=0)
     if claimed == 0 and before == 0 and after == 0:
         text = (
@@ -831,14 +832,27 @@ def send_telegram_notif(cfg, info):
             f"🕐 {now}\n"
             f"Run: python bot.py --status"
         )
-    else:
+    elif claim_type == "group":
+        type_label = "👥 Group Claim"
+        next_line = "Next group claim in 24h."
         text = (
-            f"✅ ITLG Claim Success\n\n"
+            f"✅ ITLG {type_label} Success\n\n"
+            f"💰 Claimed: +{claimed} ITLG\n"
+            f"📊 Balance: {before} → {after} ITLG\n"
+            f"👥 Group reward: {per_claim} ITLG\n"
+            f"🕐 {now}\n\n"
+            f"{next_line}"
+        )
+    else:
+        day_line = f"\n📈 Per day: ~{per_day} ITLG (6 claims)" if per_day else ""
+        group_line = f"\n👥 Group: {group_rate}/day (active!)" if group_rate > 0 else "\n👥 Group: pending activation"
+        text = (
+            f"✅ ITLG Mine Claim Success\n\n"
             f"💰 Claimed: +{claimed} ITLG\n"
             f"📊 Balance: {before} → {after} ITLG\n"
             f"⏱️ Per claim: {per_claim} ITLG{day_line}{group_line}\n"
             f"🕐 {now}\n\n"
-            f"Next claim in 4h."
+            f"Next mine claim in 4h."
         )
     url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
     payload = {"chat_id": chat_id, "text": text}
@@ -905,6 +919,7 @@ def attempt_claim(cfg, token):
                 "rate_per_claim": rates["actual_per_claim"] if rates["has_history"] else claimed,
                 "rate_per_day": rates["actual_per_day"] if rates["has_history"] else None,
                 "group_rate": group_rate,
+                "claim_type": "mine",
             })
         except Exception as e:
             log("warn", f"Telegram notif failed: {e}")
@@ -938,6 +953,7 @@ def attempt_claim(cfg, token):
                     "rate_per_claim": rates["actual_per_claim"] if rates["has_history"] else claimed,
                     "rate_per_day": rates["actual_per_day"] if rates["has_history"] else None,
                     "group_rate": group_rate,
+                    "claim_type": "mine",
                 })
             except Exception:
                 pass

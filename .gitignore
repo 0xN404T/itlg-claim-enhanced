@@ -13,3 +13,7 @@ __pycache__/
 .venv/
 node_modules/
 .bot.pid
+.bot.stop
+results_community.json
+cookies.json
+.env

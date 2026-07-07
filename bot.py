@@ -233,40 +233,45 @@ def grab_otp(cfg, email_addr, after_ts):
         try:
             mail = imaplib.IMAP4_SSL("imap.gmail.com")
             mail.login(email_addr, cfg["imapPassword"])
-            mail.select("inbox")
-            _, msgs = mail.search(None, "ALL")
-            for eid in reversed(msgs[0].split()[-10:]):
-                _, msg_data = mail.fetch(eid, "(RFC822)")
-                for part in msg_data:
-                    if not isinstance(part, tuple):
-                        continue
-                    msg = email.message_from_bytes(part[1])
-                    # Reject old emails
-                    try:
-                        if parsedate_to_datetime(msg.get("Date", "")).timestamp() < after_ts - 30:
+            # Check both inbox AND spam (Interlink OTP often lands in spam)
+            for folder in ["inbox", "[Gmail]/Spam", "[Gmail]/Junk"]:
+                try:
+                    mail.select(folder)
+                except Exception:
+                    continue
+                _, msgs = mail.search(None, "ALL")
+                for eid in reversed(msgs[0].split()[-10:]):
+                    _, msg_data = mail.fetch(eid, "(RFC822)")
+                    for part in msg_data:
+                        if not isinstance(part, tuple):
                             continue
-                    except Exception:
-                        pass
-                    # Must be "Login Verification" (not "Email Change")
-                    subj = str(msg.get("Subject", ""))
-                    if "login" not in subj.lower() and "verification code" not in subj.lower():
-                        continue
-                    body = ""
-                    if msg.is_multipart():
-                        for p in msg.walk():
-                            ct = p.get_content_type()
-                            if ct == "text/plain":
-                                try: body = p.get_payload(decode=True).decode(errors="ignore")
-                                except: pass
-                            elif ct == "text/html" and not body:
-                                try: body = p.get_payload(decode=True).decode(errors="ignore")
-                                except: pass
-                    else:
-                        try: body = msg.get_payload(decode=True).decode(errors="ignore")
-                        except: pass
-                    matches = re.findall(r"\b(\d{6})\b", body or "")
-                    if matches:
-                        return matches[0]
+                        msg = email.message_from_bytes(part[1])
+                        # Reject old emails
+                        try:
+                            if parsedate_to_datetime(msg.get("Date", "")).timestamp() < after_ts - 30:
+                                continue
+                        except Exception:
+                            pass
+                        # Must be "Login Verification" (not "Email Change")
+                        subj = str(msg.get("Subject", ""))
+                        if "login" not in subj.lower() and "verification code" not in subj.lower():
+                            continue
+                        body = ""
+                        if msg.is_multipart():
+                            for p in msg.walk():
+                                ct = p.get_content_type()
+                                if ct == "text/plain":
+                                    try: body = p.get_payload(decode=True).decode(errors="ignore")
+                                    except: pass
+                                elif ct == "text/html" and not body:
+                                    try: body = p.get_payload(decode=True).decode(errors="ignore")
+                                    except: pass
+                        else:
+                            try: body = msg.get_payload(decode=True).decode(errors="ignore")
+                            except: pass
+                        matches = re.findall(r"\b(\d{6})\b", body or "")
+                        if matches:
+                            return matches[0]
         except Exception as e:
             log("warn", f"IMAP error: {e}")
         finally:
